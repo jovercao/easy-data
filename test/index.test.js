@@ -1,4 +1,4 @@
-const $ = require('../index')
+const $ = require('../lib/index')
 const assert = require('assert')
 const _ = require('lodash')
 
@@ -24,7 +24,6 @@ describe('测试', () => {
 
         assert(_.isEqual(item, { a: 1, b: '100', c: '1000' }))
     })
-
 
     it('$:changing, changed', () => {
         const item = $({ a: 'old', b: 'old' })
@@ -54,7 +53,6 @@ describe('测试', () => {
 
         assert(changingTimes === 2)
         assert(changedTimes === 1)
-
     })
 
     it('$:changing, changed, reset, apply', () => {
@@ -103,12 +101,49 @@ describe('测试', () => {
             { a: 'old4', b: 'old4' }
         ])
 
+        list.on('apply', () => {
+            console.log('apply')
+        })
+        list.on('add', (item, index) => {
+            console.log(`add ${item} at ${index}`)
+        })
+        list.on('changed', (item, index) => {
+            console.log(`add ${item} at ${index}`)
+        })
+        list.on('reset', () => {
+            console.log('reset')
+        })
+
+        list.add({
+            a: 'new6',
+            b: 'new6'
+        })
+
         list.add({
             a: 'new5',
             b: 'new5'
-        })
+        }, 4)
 
-        assert(list[5])
+        assert(_.isEqual(list[4], {
+            a: 'new5',
+            b: 'new5'
+        }))
+
+        for (let i = 0; i <= 3; i++) {
+            list[i].a = 'new' + i
+            list[i].b = 'new' + i
+        }
+
+        list.apply()
+
+        list.delete(list[4])
+
+        assert(list.length === 4)
+
+        list.reset()
+
+        assert(list.length === 5)
+        assert(_.isEqual(list[0], { a: 'new1', b: 'new1' }))
+        assert(_.isEqual(list[4], { a: 'new5', b: 'new5' }))
     })
-
 })

@@ -2,16 +2,18 @@
   "name": "easy-data",
   "version": "0.1.0",
   "description": "可监查数据对象，自动追踪增删改",
-  "main": "index.js",
+  "main": "lib/index.js",
   "dependencies": {
-    "lodash": "^4.17.15"
+    "g": "^2.0.1",
+    "lodash": "^4.17.15",
+    "npm": "^6.14.3"
   },
   "devDependencies": {
     "eslint": "^6.8.0",
     "mocha": "^7.1.1"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "mocha ./test"
   },
   "repository": {
     "type": "git",
