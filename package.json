@@ -1,5 +1,5 @@
 {
-  "name": "easy-data",
+  "name": "@jovercao/easy-data",
   "version": "0.1.0",
   "description": "可监查数据对象，自动追踪增删改",
   "main": "lib/index.js",
