@@ -1,18 +1,17 @@
 const $ = require('../lib/index')
-const assert = require('assert')
-const _ = require('lodash')
+const assert = require('power-assert')
 
 describe('测试', () => {
     it('$()', () => {
         const item = $()
-        assert(item.$isNew() === true)
+        // assert(item.$isNew() === true)
         assert(JSON.stringify(item) === '{}')
     })
 
     it('$(data)', () => {
         const item = $({ a: 1, b: 2 })
-        assert(item.$isNew() === false)
-        assert(_.isEqual(item, { a: 1, b: 2 }))
+        // assert(item.$isNew() === false)
+        assert.deepEqual(item, { a: 1, b: 2 })
     })
 
     it('item.property = value', () => {
@@ -22,7 +21,7 @@ describe('测试', () => {
 
         item.c = '1000'
 
-        assert(_.isEqual(item, { a: 1, b: '100', c: '1000' }))
+        assert.deepEqual(item, { a: 1, b: '100', c: '1000' })
     })
 
     it('$:changing, changed', () => {
@@ -30,7 +29,7 @@ describe('测试', () => {
         let changingTimes = 0
         let changedTimes = 0
 
-        item.$on('changing', function ({ oldValue, newValue, property }, cancel) {
+        item.$on('changing', function ({ oldValue, newValue, property, cancel }) {
             changingTimes++
             if (property === 'b') return cancel()
             if (property === 'a') {
@@ -69,7 +68,7 @@ describe('测试', () => {
         item.a = 'new'
         item.b = 'new'
 
-        assert(_.isEqual(item, { a: 'new', b: 'new' }))
+        assert.deepEqual(item, { a: 'new', b: 'new' })
 
         item.a = 'old'
         item.b = 'old'
@@ -81,11 +80,11 @@ describe('测试', () => {
 
         item.$apply()
 
-        assert(_.isEqual(item, { a: 'new', b: 'new' }))
+        assert.deepEqual(item, { a: 'new', b: 'new' })
 
         assert(applyTimes === 1)
 
-        item.b = 'reset'
+        item.b = 'after reset'
 
         item.$reset()
         assert(item.b === 'new')
@@ -101,14 +100,17 @@ describe('测试', () => {
             { a: 'old4', b: 'old4' }
         ])
 
-        list.on('apply', () => {
-            console.log('apply')
-        })
         list.on('add', (item, index) => {
             console.log(`add ${item} at ${index}`)
         })
+        list.on('delete', (item, index) => {
+            console.log(`delete ${item} at ${index}`)
+        })
         list.on('changed', (item, index) => {
             console.log(`add ${item} at ${index}`)
+        })
+        list.on('apply', () => {
+            console.log('apply')
         })
         list.on('reset', () => {
             console.log('reset')
@@ -124,26 +126,26 @@ describe('测试', () => {
             b: 'new5'
         }, 4)
 
-        assert(_.isEqual(list[4], {
+        assert.deepEqual(list[4], {
             a: 'new5',
             b: 'new5'
-        }))
+        })
 
         for (let i = 0; i <= 3; i++) {
-            list[i].a = 'new' + i
-            list[i].b = 'new' + i
+            list[i].a = 'new' + (i + 1)
+            list[i].b = 'new' + (i + 1)
         }
 
         list.apply()
 
         list.delete(list[4])
 
-        assert(list.length === 4)
+        assert(list.length === 5)
 
         list.reset()
 
-        assert(list.length === 5)
-        assert(_.isEqual(list[0], { a: 'new1', b: 'new1' }))
-        assert(_.isEqual(list[4], { a: 'new5', b: 'new5' }))
+        assert(list.length === 6)
+        assert.deepEqual(list[0], { a: 'new1', b: 'new1' })
+        assert.deepEqual(list[4], { a: 'new5', b: 'new5' })
     })
 })
