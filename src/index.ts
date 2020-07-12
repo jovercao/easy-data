@@ -1,470 +1,658 @@
-const _ = require('lodash')
-const { EventEmitter } = require('events')
+import _ = require('lodash')
+import { EventEmitter } from 'events'
+import { EMFILE } from 'constants'
 
-class List extends Array {
-    constructor(datas) {
-        super()
-        this._items = new Set()
-        this._addeds = new Set()
-        this._removeds = new Set()
-        this._modifieds = new Set()
-        // 原始顺序，用于reset重置
-        this._originItemIndexs = new Map()
-        this._events = new EventEmitter()
-        this._load(datas)
+/**
+ * 当前数据状态
+ */
+export enum DataStatus {
+    /**
+     * 无效的，废弃的
+     */
+    Invalid = 'invalid',
+    /**
+     * 原始的，未修改的
+     */
+    Original = 'original',
+    /**
+     * 新建的
+     */
+    New = 'new',
+    /**
+     * 被修改过的
+     */
+    Modified = 'modified',
+    /**
+     * 被删除的
+     */
+    Deleted = 'deleted'
+}
+
+export class Watcher<T extends object> {
+    /**
+     * 修改数量
+     */
+    private _changedCount: number = 0
+
+    private _emitter: EventEmitter
+    /**
+     * 当前状态
+     */
+    status: DataStatus = DataStatus.Original
+
+    /**
+     * 被修改过的属性的原始值将存在该对象中
+     */
+    private readonly _changedValues: {
+        [key: string]: any
+        [key: number]: any
     }
 
-    _attach(data, index) {
-        let item = data
-        if (!item.$isEasyData) {
-            item = createItem(data)
-        }
-        if (item.$isPhantom()) {
-            throw new Error('Add item opration is allowed original item or plain object item only.')
-        }
-        this._items.add(item)
-        if (index >= 0) {
-            this._splice(index, 0, item)
-        } else {
-            index = super.push(item) - 1
-        }
-        this._originItemIndexs[item] = index
-        this._bind(item)
-        return item
-    }
+    /**
+     * 代理后的对象，想要受到监控使用该对象
+     */
+    readonly data: T
+    readonly source: T
 
-    _bind(item) {
-        item.$on('change', (e) => {
-            if (this._items.has(item) && !this._modifieds.has(item)) {
-                this._modifieds.add(item)
-            }
-            const itemIndex = super.indexOf(item)
-            this._events.emit('change', item, itemIndex)
-        })
-        item.$on('apply', () => {
-            if (this._applying) return
-            if (this._modifieds.has(item)) {
-                this._modifieds.delete(item)
-            } else if (this._removeds.has(item)) {
-                this._removeds.delete(item)
-                this._unbind(item)
-            } else if (this._addeds.has(item)) {
-                this._addeds.delete(item)
-            }
-        })
-        item.$on('reset', () => {
-            if (this._resetting) return
-            const itemIndex = super.indexOf(item)
-            if (this._addeds.has(item)) {
-                this._addeds.delete(item)
-                this._items.delete(item)
-                this._splice(itemIndex, 1)
-                this._events.emit('delete', item, itemIndex)
-            } else if (this._modifieds.has(item)) {
-                this._modifieds.delete(item)
-                this._events.emit('change', item, itemIndex)
-            } else if (this._removeds.has(item)) {
-                const oldIndex = this._origin.indexOf(item)
-                this._removeds.delete(item)
-                this._items.add(item)
-                // 还原到原有位置
-                if (oldIndex < this.length) {
-                    this._splice(oldIndex, 0, item)
-                } else {
-                    super.push(item)
+    private constructor(data: T, status: DataStatus.New | DataStatus.Original) {
+        this._emitter = new EventEmitter()
+        this._changedValues = {}
+        this.source = data
+        this.status = status
+        this.data = new Proxy(data, {
+            set: (target: T, property: string | number, value: any): boolean => {
+                this._checkInvalid()
+                if (this.status === DataStatus.Deleted) {
+                    throw new Error('Do not allow modification of deleted data')
                 }
-                this._events.emit('add', item, oldIndex)
+                const oldValue = Reflect.get(target, property)
+                if (value !== oldValue) {
+                    this._emitter.emit('change', target, property, oldValue, value)
+
+                    if (this.status === DataStatus.Original || this.status === DataStatus.Modified) {
+                        const hasOrigin = Reflect.has(this._changedValues, property)
+                        if (!hasOrigin) {
+                            this._changedValues[property] = oldValue
+                            this._changedCount++
+                            if (this.status === DataStatus.Original) {
+                                this.status = DataStatus.Modified
+                                this._emitter.emit('modify', this.source)
+                            }
+                        }
+                        if (hasOrigin && this._changedValues[property] === value) {
+                            Reflect.deleteProperty(this._changedValues, property)
+                            this._changedCount--
+                            if (this._changedCount === 0) {
+                                this.status = DataStatus.Original
+                                this._emitter.emit('reset', this.source)
+                            }
+                        }
+                    }
+                }
+                return Reflect.set(target, property, value)
             }
         })
-
-        item.$on('delete', () => {
-            if (this._items.has(item)) {
-                this.delete(item)
-            }
-        })
     }
 
-    _unbind(item) {
-        item.$off('changed')
-        item.$off('apply')
-        item.$off('reset')
-        item.$off('delete')
+    static new<T extends object>(data: T) {
+        return new Watcher(data, DataStatus.New)
     }
 
-    _load(datas) {
-        for (const item of [...this._items, ...this._addeds, ...this._removeds]) {
-            this._unbind(item)
-        }
-        this._items.clear()
-        this.length = 0
-        this._addeds.clear()
-        this._removeds.clear()
-        this._originItemIndexs.clear()
-        this._origin = []
-        for (const data of datas) {
-            this._origin.push(this._attach(data))
-        }
+    static origin<T extends object>(data: T) {
+        return new Watcher(data, DataStatus.Original)
     }
 
-    _splice(start, delectCount, ...items) {
-        const oldLength = this.length
-        const offset = items.length - delectCount
-        const newLength = oldLength + offset
-        // 元素长度变更，移动元素
-        if (offset > 0) {
-            for (let i = 0; i < oldLength - start - delectCount; i++) {
-                this[newLength - 1 - i] = this[oldLength - 1 - i]
-            }
-        }
-
-        if (offset < 0) {
-            for (let i = 0; i < oldLength - newLength - start; i++) {
-                this[start + i] = this[start - offset + i]
-            }
-            this.length = newLength
-        }
-
-        // 将新的元素填充进入
-        for (let i = 0; i < items.length; i++) {
-            this[i + start] = items[i]
-        }
-    }
-
-    push(...items) {
-        items.forEach(item => this.add(item))
-        return this.length
-    }
-
-    splice(start, deleteCount, ...items) {
-        throw new Error('不允许调用splice方法')
-        // if (deleteCount > 0) {
-        //     for (let i = start + deleteCount; i >= start; i--) {
-        //         this.delete(this[i])
-        //     }
-        // }
-        
-        // items.forEach((item, i) => {
-        //     this.add(item, start + i)
-        // })
-    }
-
-    // set(index, item) {
-    //     const old = this[item]
-    //     if (old) {
-    //         this._unbind(old)
-    //         this._items.delete(old)
-    //         if (this._changeds.has(old)) {
-    //             this._changeds.delete(old)
-    //         }
-    //         if (this._removeds.has(old)) {
-    //             this._changeds.delete(old)
-    //         }
-    //     }
-    //     this._attach(item)
-    // }
-
-    clear() {
-        for (const item of this._items) {
-            this.delete(item)
-        }
-    }
-
-    apply() {
-        this._applying = true
-        for (const item of [...this._addeds, ...this._modifieds, ...this._removeds]) {
-            item.$apply()
-        }
-        this._addeds.clear()
-        this._removeds.clear()
-        this._origin = [...this]
-        this._applying = false
-        this._events.emit('apply')
-    }
-
-    reset() {
-        this._resetting = true
-        for (const item of this._addeds) {
-            this._unbind(item)
-            this._splice(super.indexOf(item), 1)
-            item.$reset()
-        }
-        for (const item of this._modifieds) {
-            item.$reset()
-        }
-        for (const item of this._removeds) {
-            item.$reset()
-        }
-        this._items.clear()
-        this._addeds.clear()
-        this._removeds.clear()
-        // 替换数组内空为三拜九叩数据
-        this._splice(0, this.length, ...this._origin)
-        this._origin.forEach(item => this._items.add(item))
-        this._resetting = false
-        this._events.emit('reset')
-    }
-
-    add(dataOrItem, index) {
-        if (this._items.has(dataOrItem)) {
-            throw new Error('The item is exists.')
-        }
-        const item = this._attach(dataOrItem, index)
-        this._addeds.add(item)
-        this._events.emit('add', item, this.length - 1)
-        return item
-    }
-
-    delete(item) {
-        if (!this._items.has(item)) {
-            throw new Error('不能删除不存在集合内的项！')
-        }
-        this._items.delete(item)
-        const index = super.indexOf(item)
-        this._splice(index, 1)
-        if (!this._addeds.has(item)) {
-            this._removeds.add(item)
-        }
-        if (item.$status() !== 'deleted') {
-            item.$delete()
-        }
-        this._events.emit('delete', item, index)
+    /**
+     * 当值被应用时触发
+     * @param event 
+     * @param handler 
+     */
+    on(event: 'apply', handler: (target: T, oldStatus: DataStatus) => void): this
+    /**
+     * 值被重置到初始状态
+     * @param event 
+     * @param handler 
+     */
+    on(event: 'reset', handler: (target: T, oldStatus: DataStatus) => void): this
+    /**
+     * 当data对象相较于原始状态发生变化时触发该事件
+     * @param event 
+     * @param handler 
+     */
+    on(event: 'modify', handler: (target: T) => void): this
+    /**
+     * 当属性被修改时触发
+     * @param event 
+     * @param handler 
+     */
+    on(event: 'change', handler: (target: T, property: keyof T, oldValue: any, newValue: any) => void): this
+    /**
+     * 当该记录被记录集删除时触发
+     * @param event 
+     * @param handler 
+     */
+    on(event: 'delete', handler: (target: T) => void): this
+    on(event: string, handler: (...args: any[]) => void): this {
+        this._emitter.on(event, handler)
         return this
     }
 
-    isChanged() {
-        return this._addeds.size > 0 || this._modifieds.size > 0 || this._removeds.size > 0
-    }
-
-    getChangeds() {
-        return {
-            addeds: [...this._addeds],
-            modifieds: [...this._modifieds],
-            removeds: [...this._removeds]
-        }
-    }
-
-    on(event, handler) {
-        this._events.on(event, handler)
-    }
-
-    off(event, handler) {
-        if (handler) {
-            this._events.off(event, handler)
+    off(event: 'apply', handler: (target: T) => void): this
+    off(event: 'reset', handler: (target: T) => void): this
+    off(event: 'modify', handler: (target: T) => void): this
+    off(event: 'delete', handler: (target: T) => void): this
+    off(event: 'change', handler: (target: T, property: keyof T, oldValue: any, newValue: any) => void): this
+    off(event: 'apply'): this
+    off(event: 'reset'): this
+    off(event: 'modify'): this
+    off(event: 'delete'): this
+    off(event: 'change'): this
+    off(event: string, handler?: (...args: any[]) => void): this {
+        if (!handler) {
+            this._emitter.removeAllListeners()
         } else {
-            this._events.removeAllListeners(event)
+            this._emitter.off(event, handler)
         }
+        return this
+    }
+
+    private _checkInvalid() {
+        if (this.status === DataStatus.Invalid) throw new Error('Invalid action, Data has been marked invalid.')
+    }
+
+    private _resetValue() {
+        for (const [key, value] of Object.entries(this._changedValues)) {
+            Reflect.set(this.source, key, value)
+            Reflect.deleteProperty(this._changedValues, key)
+        }
+    }
+
+    reset() {
+        this._checkInvalid()
+        const oldStatus = this.status
+        switch (this.status) {
+            case DataStatus.Original:
+                return
+            case DataStatus.Modified:
+            case DataStatus.Deleted:
+                this._resetValue()
+                this.status = DataStatus.Original
+                break
+            case DataStatus.New:
+                this.status = DataStatus.Invalid
+                break
+        }
+        this._emitter.emit('reset', this.source, oldStatus)
+    }
+
+    apply() {
+        this._checkInvalid()
+        if (this.status === DataStatus.Original) return
+
+        for (const key of Object.keys(this._changedValues)) {
+            Reflect.deleteProperty(this._changedValues, key)
+        }
+        const oldStatus = this.status
+        switch (this.status) {
+            case DataStatus.Deleted:
+                this.status = DataStatus.Invalid
+                break
+            default:
+                this.status = DataStatus.Original
+                break
+        }
+        this._emitter.emit('apply', this.source, oldStatus)
+    }
+
+    /**
+     * 删除项，如果项之前被修改过，则其会恢复成修改前的状态并删除
+     */
+    delete() {
+        this._checkInvalid()
+        this._resetValue()
+        this.status = DataStatus.Deleted
+        this._emitter.emit('delete', this.source)
+    }
+
+    /**
+     * 获取被修改的属性,当状态modified和deleted时有返回值
+     */
+    getChanges() {
+        this._checkInvalid()
+        if (this.status === DataStatus.New) {
+            return Object.entries(this.source).map(([key, value]) => ({
+                property: key,
+                oldValue: undefined,
+                newValue: value
+            }))
+        }
+        return Object.keys(this._changedValues).map(key => ({
+            property: key,
+            oldValue: this._changedValues[key],
+            newValue: Reflect.get(this.source, key)
+        }))
     }
 }
 
-function createItem(data) {
-    const events = new EventEmitter()
-    let origin = data || {}
-    let modifieds = new Set()
-    const childs = {}
-    let status = !data ? 'new' : 'original'
 
-    const checkInvalid = () => {
-        if (status === 'invalid') {
-            throw new Error('不允许操作无效的对象！')
+export interface ListMetadata<T extends object> {
+    addeds: T[];
+    modifieds: {
+        item: T;
+        changes: {
+            property: string;
+            oldValue: any;
+            newValue: any;
+        }[];
+    }[];
+    deleteds: T[];
+    originals: T[];
+}
+
+export class List<T extends object> implements Iterable<T> {
+    _length: number = 0
+    readonly [index: number]: T
+    private readonly _emitter: EventEmitter
+
+    *[Symbol.iterator](): Iterator<T> {
+        for (let i = 0; i < this._length; i++) {
+            yield this[i]
         }
     }
-    const prototype = {
-        $isEasyData: true,
-        $status() {
-            return status
-        },
-        $isPhantom() {
-            return status !== 'original'
-        },
-        $isInvalid() {
-            return status === 'invalid'
-        },
-        $changeds() {
-            checkInvalid()
-            if (status === 'modified') {
-                return Array.from(modifieds).map(property => {
-                    const changedItem = {
-                        property,
-                        newValue: instance[property]
-                    }
-                    if (origin.hasOwnProperty(property)) {
-                        changedItem.oldValue = origin[property]
-                    }
-                    return changedItem
-                })
-            }
-            return []
-        },
-        $apply() {
-            checkInvalid()
-            switch (status) {
-                case 'deleted':
-                    status = 'invalid'
-                    break
-                case 'modified':
-                    modifieds.clear()
-                    origin = Object.assign({}, this)
-                    status = 'original'
-                    break
-                case 'new':
-                    status = 'original'
-                    origin = Object.assign({}, this)
-                    break
-            }
-            events.emit('apply')
-        },
-        $reset() {
-            checkInvalid()
-            switch (status) {
-                case 'modified':
-                    Array.from(modifieds).forEach(property => {
-                        if (origin.hasOwnProperty(property)) {
-                            instance[property] = origin[property]
-                        } else {
-                            delete instance[property]
-                        }
-                    })
-                    modifieds.clear()
-                    status = 'original'
-                    break
-                case 'new':
-                    status = 'invalid'
-                    break
-                case 'deleted':
-                    status = 'original'
-                    break
-            }
-            events.emit('reset')
-        },
-        $delete() {
-            checkInvalid()
-            switch (status) {
-                case 'new':
-                    instance.$reset()
-                    break
-                case 'modified':
-                    this.$reset()
-                    this.$delete()
-                    break
-                case 'original':
-                    status = 'deleted'
-                    break
-            }
-            events.emit('deleted')
-        },
-        $on(event, handler) {
-            return events.on(event, handler)
-        },
-        $off(event, handler) {
-            if (!handler) {
-                events.removeAllListeners(event)
-            } else {
-                events.removeListener(event, handler)
-            }
-        },
+
+    private readonly _watchers: Map<T, Watcher<T>>
+
+    private readonly _allItems: Map<T, number>
+    private _viewItems: T[]
+    private _originsItems: T[]
+
+    private _applying: boolean = false
+    private _resetting: boolean = false
+    private _cleaning: boolean = false
+
+    private _addedCount: number = 0
+    private _deletedCount: number = 0
+    private _modifiedCount: number = 0
+
+    get length() {
+        return this._length
+    }
+
+    get addedCount() {
+        return this._addedCount
+    }
+
+    get deletedCount() {
+        return this._deletedCount
+    }
+
+    get modifiedCount() {
+        return this._modifiedCount
+    }
+
+    get count() {
+        return this._length
+    }
+
+    get isChanged() {
+        return this._addedCount > 0 || this._deletedCount > 0 || this._modifiedCount > 0
+    }
+
+    constructor(datas: T[]) {
+        this._emitter = new EventEmitter
         /**
-         * 定义子属性，可以是单个对象，亦可是列表
-         * @param {*} datas plain object data
+         * 视图查看时的项
          */
-        $defineChild(name, datas) {
-            if (!Reflect.has(this, name)) {
-                throw new Error(`子属性不能定义为已经存在的属性！${name}`)
-            }
-            const child = create(datas)
-            Object.defineProperty(this, name, { value: child })
-            childs[name] = child
-        },
-        $childs() {
-            return Object.entries(childs)
-        },
-        $set(property, value) {
-            checkInvalid()
-            if (status === 'deleted') {
-                throw new Error('不允许修改已删除的实例！')
-            }
-            if (instance.hasOwnProperty(property) && instance[property] === value) {
-                return
-            }
-            const oldValue = instance[property]
-            const newValue = value
+        this._viewItems = Array.from(datas)
+        this._watchers = new Map<T, Watcher<T>>()
+        this._allItems = new Map<T, number>()
 
-            let isCanceled = false
-            const cancel = function () {
-                isCanceled = true
+        // 原始顺序，用于reset重置
+        this._originsItems = Array.from(datas)
+        this._viewItems.forEach((item, index) => this._allItems.set(item, index))
+        this._updateLength()
+    }
+
+    private _updateLength() {
+        if (this._length > this._viewItems.length) {
+            for (let i = this._length - 1; i >= this._viewItems.length - 1; i--) {
+                this._unwatch(i)
             }
-            events.emit('changing', { property, oldValue, newValue, cancel })
-
-            if (isCanceled) {
-                return
+        } else if (this._length < this._viewItems.length) {
+            for (let i = this._length; i < this._viewItems.length; i++) {
+                this._watch(i)
             }
+        }
+        this._length = this._viewItems.length
+    }
 
-            instance[property] = newValue
+    private _watch(index: number) {
+        /**
+         * 延迟加载watcher以优化性能
+         */
+        Reflect.defineProperty(this, index, {
+            get: () => {
+                const item = this._viewItems[index]
+                let watcher = this._watchers.get(item)
+                if (!watcher) {
+                    watcher = Watcher.origin(item)
+                    this._watchers.set(item, watcher)
+                    this._watchers.set(watcher.data, watcher)
+                    this._bind(watcher)
+                }
+                return watcher.data
+            },
+            set(v) {
+                throw new Error('List item is readonly.')
+            }
+        })
+    }
 
-            // 如果不是新增，记录修改项
-            if (status === 'original' || status === 'modified') {
-                // 如果属性改回原样
-                if (Reflect.has(origin, property) && (origin[property] === value)) {
-                    if (modifieds.has(property)) {
-                        modifieds.delete(property)
-                    }
+    private _unwatch(index: number) {
+        Reflect.deleteProperty(this, index)
+    }
 
-                    if (modifieds.size === 0) {
-                        events.emit('reset')
-                    }
-                } else {
-                    if (!modifieds.has(property)) {
-                        modifieds.add(property)
+    private _bind(watcher: Watcher<T>) {
+        watcher.on('change', (item) => {
+            this._emitter.emit('change', item, this._viewItems.indexOf(item))
+        })
+        watcher.on('modify', (item) => {
+            this._modifiedCount++
+        })
+        watcher.on('apply', (item, oldStatus) => {
+            if (this._applying) return
+            switch (oldStatus) {
+                case DataStatus.Deleted:
+                    this._clearInvalid(item)
+                    this._deletedCount--;
+                    break;
+                case DataStatus.Modified:
+                    this._modifiedCount--;
+                    break;
+                case DataStatus.New:
+                    this._addedCount--;
+                    break;
+            }
+        })
+        watcher.on('reset', (item, oldStatus) => {
+            if (this._resetting) return
+            switch (oldStatus) {
+                case DataStatus.Deleted:
+                    const resetIndex = Math.min(<number>this._allItems.get(item), this._length)
+                    this._viewItems.splice(resetIndex, 0, item)
+                    this._allItems.set(item, resetIndex)
+                    this._emitter.emit('add', watcher.data, resetIndex)
+                    this._updateLength()
+                    this._deletedCount--;
+                    break;
+                case DataStatus.Modified:
+                    this._emitter.emit('change', watcher.data, this._viewItems.indexOf(item))
+                    this._modifiedCount--;
+                    break;
+                case DataStatus.New:
+                    this._addedCount--;
+                    this._clearInvalid(item)
+                    break;
+            }
+        })
+
+        watcher.on('delete', (item) => {
+            if (this._cleaning) return
+            const index = this._viewItems.indexOf(item)
+            this._viewItems.splice(index, 1)
+            this._deletedCount++
+            this._updateLength()
+            this._emitter.emit('delete', watcher.data, index)
+        })
+    }
+
+    private _clearInvalid(item: T) {
+        // 清理缓存
+        const watcher = <Watcher<T>>this._watchers.get(item)
+        watcher.off('change')
+        watcher.off('modify')
+        watcher.off('apply')
+        watcher.off('reset')
+        watcher.off('delete')
+        this._allItems.delete(item)
+        // 删除watcher
+        this._watchers.delete(watcher.data)
+        this._watchers.delete(item)
+    }
+
+    on(event: 'change', handler: (item: T, index: number) => void): this
+    on(event: 'reset', handler: () => void): this
+    on(event: 'clean', handler: () => void): this
+    on(event: 'apply', handler: () => void): this
+    on(event: 'add', handler: (item: T, index: number) => void): this
+    on(event: 'delete', handler: (item: T, index: number) => void): this
+    on(event: string, handler: (...args: any) => void): this {
+        this._emitter.on(event, handler)
+        return this
+    }
+
+    off(event: 'change', handler?: (item: T, index: number) => void): this
+    off(event: 'reset', handler?: () => void): this
+    off(event: 'clean', handler?: () => void): this
+    off(event: 'apply', handler?: () => void): this
+    off(event: 'add', handler?: (item: T, index: number) => void): this
+    off(event: 'delete', handler?: (item: T, index: number) => void): this
+    off(event: string, handler?: (...args: any) => void): this {
+        if (handler) {
+            this._emitter.off(event, handler)
+        } else {
+            this._emitter.removeAllListeners(event)
+        }
+        return this
+    }
+
+    clean() {
+        this._cleaning = true
+        try {
+            for (const item of this._viewItems) {
+                this.delete(item)
+            }
+            this._viewItems = []
+            this._updateLength()
+            this._emitter.emit('clean')
+        }
+        finally {
+            this._cleaning = false
+        }
+    }
+
+    /**
+     * 重置所有项
+     */
+    apply(): void
+    /**
+     * 重置指定索引的项
+     * @param index 
+     */
+    apply(index: number): void
+    /**
+     * 重置指定的项
+     * @param item 
+     */
+    apply(item: T): this
+    apply(args?: number | T): this {
+        let item: T | undefined
+        if (typeof args === 'number') {
+            item = this._viewItems[args]
+        } else {
+            item = args
+        }
+
+        if (item) {
+            if (!this._allItems.get(item)) {
+                throw new Error('Item that do not exist of the list')
+            }
+            const watcher = this._watchers.get(item)
+            if (watcher) {
+                watcher.apply()
+            }
+        } else {
+            this._applying = true
+            try {
+                for (const [item, watcher] of this._watchers.entries()) {
+                    watcher.apply()
+                    if (watcher.status === DataStatus.Invalid) {
+                        this._clearInvalid(item)
                     }
                 }
-                if (status === 'original') {
-                    status = 'modified'
-                }
+                this._originsItems = Array.from(this._viewItems)
+                this._addedCount = 0
+                this._deletedCount = 0
+                this._modifiedCount = 0
+            } finally {
+                this._applying = false
             }
+        }
+        return this
+    }
 
-            events.emit('changed', { property, oldValue, newValue })
+    /**
+     * 重置所有项
+     */
+    reset(): this
+    /**
+     * 重置指定索引的项
+     * @param index 
+     */
+    reset(index: number): this
+    /**
+     * 重置指定的项
+     * @param item 
+     */
+    reset(item: T): this
+    reset(arg?: number | T): this {
+        let item: T | undefined = undefined
+        if (typeof arg === 'number') {
+            item = this._viewItems[arg]
+        }
+        if (typeof arg === 'object') {
+            item = arg
+        }
+
+        if (item) {
+            if (!this._allItems.get(item)) {
+                throw new Error('Item that do not exist of the list')
+            }
+            const watcher = this._watchers.get(item)
+            if (watcher) watcher.reset()
+        } else {
+            this._resetting = true
+            try {
+                for (const [item, watcher] of this._watchers.entries()) {
+                    watcher.reset()
+                    if (watcher.status === DataStatus.Invalid) {
+                        this._clearInvalid(item)
+                    }
+                }
+                this._addedCount = 0
+                this._deletedCount = 0
+                this._modifiedCount = 0
+                this._viewItems = Array.from(this._originsItems)
+                this._updateLength()
+            } finally {
+                this._resetting = false
+            }
+        }
+        return this
+    }
+
+    /**
+     * 添加一个项，并返回该项已Watch的值
+     * @param item 项
+     * @param index 要插入的索引
+     */
+    add(item: T, index?: number): T {
+        if (this._allItems.has(item)) {
+            throw new Error('Invalid action, item is watching in list.')
+        }
+        if (index === undefined) {
+            index = this._length
+        } else {
+            if (index < 0 || index > this._length) {
+                throw new Error('Out of range: index')
+            }
+        }
+        this._viewItems.splice(index, 0, item)
+        this._allItems.set(item, index)
+        const watcher = Watcher.new(item)
+        this._watchers.set(item, watcher)
+        this._watchers.set(watcher.data, watcher)
+        this._bind(watcher)
+        this._addedCount++
+        this._updateLength()
+        this._emitter.emit('add', this[index], index)
+        return this[index]
+    }
+
+    delete(item: T): boolean
+    delete(index: number): boolean
+    delete(args: T | number): boolean {
+        let item: T
+        if (typeof args === 'number') {
+            item = this._viewItems[args]
+        } else {
+            item = args
+        }
+        if (!item) {
+            throw new Error('Out of range')
+        }
+        const watcher = this._watchers.get(item)
+
+        if (!watcher) {
+            if (!this._cleaning) {
+                const index = this._viewItems.indexOf(item)
+                this._viewItems.splice(index, 1)
+                this._deletedCount++
+                this._updateLength()
+                this._emitter.emit('delete', item, index)
+            }
+        } else {
+            watcher.delete()
+        }
+        return true
+    }
+
+    getMetadata(): ListMetadata<T> {
+        const list = Array.from(this._allItems.keys())
+        return {
+            addeds: list.filter((item) => {
+                const watcher = this._watchers.get(item)
+                return watcher && watcher.status === DataStatus.New
+            }),
+            modifieds: list.filter(item => {
+                const watcher = this._watchers.get(item)
+                return watcher && watcher.status === DataStatus.Modified
+            }).map(item => {
+                const watcher = this._watchers.get(item)
+                return {
+                    item,
+                    changes: (watcher as Watcher<T>).getChanges()
+                }
+            }),
+            deleteds: list.filter(item => {
+                const watcher = this._watchers.get(item)
+                return watcher && watcher.status === DataStatus.Deleted
+            }),
+            originals: list.filter(item => {
+                const watcher = this._watchers.get(item)
+                return !watcher || watcher.status === DataStatus.Original
+            })
         }
     }
-
-    const instance = Object.create(prototype)
-
-
-    // 初始化子属性
-    for (const [prop, value] of Object.entries(origin)) {
-        if (_.isPlainObject(value) || _.isArray(value)) {
-            delete origin[prop]
-            instance.$defineChild(prop, value)
-        }
-    }
-
-    Object.assign(instance, origin)
-
-    // 返回代理，监控属性设置
-    return new Proxy(instance, {
-        set(target, property, value) {
-            instance.$set(property, value)
-        }
-    })
 }
 
-function createList(datas) {
-    return new List(datas)
+export function watch<T extends object>(items: T[]): List<T>
+export function watch<T extends object>(item: T): Watcher<T>
+export function watch<T extends object>(args: T[] | T) {
+    if (args instanceof Array) {
+        return new List(args)
+    }
+    return Watcher.new(args)
 }
 
-function create(datas) {
-    if (!datas) {
-        return createItem()
-    }
-    if (_.isArray(datas)) {
-        return createList(datas)
-    }
-    if (_.isPlainObject(datas)) {
-        return createItem(datas)
-    }
-    throw new Error('Datas must typeof Array or PlainObject')
-}
-
-module.exports = create
-
-module.exports.new = function (data) {
-    return createItem(data).$apply()
-}
+export default watch
