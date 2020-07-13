@@ -11,10 +11,17 @@
             "skipFiles": [
                 "<node_internals>/**"
             ],
-            "program": "${workspaceFolder}\\node_modules\\mocha\\bin\\_mocha",
+            "runtimeExecutable": "npm",
             "args": [
-                "./test"
-            ]
+                "run",
+                "test",
+                "--",
+                "--inspect-brk",
+                "--inspect=9229"
+            ],
+            "restart": true,
+            "protocol": "auto",
+            "port": 9229
         }
     ]
 }
