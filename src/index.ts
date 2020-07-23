@@ -26,7 +26,7 @@ export enum DataStatus {
     Deleted = 'deleted'
 }
 
-export class Watcher<T extends object> {
+export class Watcher<T extends object = any> {
     /**
      * 修改数量
      */
@@ -37,6 +37,8 @@ export class Watcher<T extends object> {
      * 当前状态
      */
     status: DataStatus = DataStatus.Original
+
+    deepth: boolean
 
     /**
      * 被修改过的属性的原始值将存在该对象中
@@ -51,12 +53,20 @@ export class Watcher<T extends object> {
      */
     readonly data: T
     readonly source: T
+    private readonly _detailWatchers: {
+        [property: string]: {
+            hasMany: boolean
+            list: List<any>
+        }
+    }
 
-    private constructor(data: T, status: DataStatus.New | DataStatus.Original) {
+    private constructor(data: T, status: DataStatus.New | DataStatus.Original, deepth: boolean = true) {
         this._emitter = new EventEmitter()
         this._changedValues = {}
         this.source = data
         this.status = status
+        this._detailWatchers = {}
+        this.deepth = deepth
         this.data = new Proxy(data, {
             set: (target: T, property: string | number, value: any): boolean => {
                 this._checkInvalid()
@@ -64,6 +74,17 @@ export class Watcher<T extends object> {
                     throw new Error('Do not allow modification of deleted data')
                 }
                 const oldValue = Reflect.get(target, property)
+
+                const watcherInfo = this._detailWatchers[property]
+                if (watcherInfo) {
+                    if (!watcherInfo.hasMany && watcherInfo.list[0] !== value) {
+                        watcherInfo.list.delete(watcherInfo.list[0])
+                        watcherInfo.list.add(value)
+                        return Reflect.set(target, property, value)
+                    } else {
+                        throw new Error(`Do not allow modification watched list property ${property}`)
+                    }
+                }
                 if (value !== oldValue) {
                     this._emitter.emit('change', target, property, oldValue, value)
 
@@ -88,6 +109,64 @@ export class Watcher<T extends object> {
                     }
                 }
                 return Reflect.set(target, property, value)
+            },
+
+            get: (target: T, property: string | number): any => {
+                const value = Reflect.get(target, property)
+                if (!deepth) {
+                    return value
+                }
+                let watcherInfo = this._detailWatchers[property]
+                if (!watcherInfo) {
+                    if (value === undefined || value === null
+                        || value instanceof Date
+                        || value instanceof Buffer
+                        || typeof value === 'number'
+                        || typeof value === 'string'
+                        || typeof value === 'bigint'
+                        || typeof value === 'boolean'
+                        || typeof value === 'symbol') {
+                        return value
+                    }
+                    if (Array.isArray(value)) {
+                        watcherInfo = this._detailWatchers[property] = {
+                            hasMany: true,
+                            list: watch(value)
+                        }
+                    } else {
+                        watcherInfo = this._detailWatchers[property] = {
+                            hasMany: false,
+                            list: watch([value])
+                        }
+                    }
+                    const handler = (event: string, target?: T, index?: number) => {
+                        this._emitter.emit('detailchange', {
+                            property: property,
+                            detailList: watcherInfo.list,
+                            event: 'add',
+                            target,
+                            index
+                        })
+                    }
+                    watcherInfo.list.on('add', (target, index) => {
+                        handler('add', target, index)
+                    }).on('change', (target, index) => {
+                        handler('change', target, index)
+                    }).on('delete', (target, index) => {
+                        handler('add', target, index)
+                    }).on('clean', () => {
+                        handler('clean')
+                    }).on('reset', () => {
+                        handler('reset')
+                    }).on('apply', () => {
+                        handler('apply')
+                    })
+                }
+                if (watcherInfo.hasMany) {
+                    return watcherInfo
+                } else {
+                    return watcherInfo.list[0]
+                }
             }
         })
     }
@@ -247,7 +326,7 @@ export interface ListMetadata<T extends object> {
     originals: T[];
 }
 
-export class List<T extends object> implements Iterable<T> {
+export class List<T extends object = any> implements Iterable<T> {
     _length: number = 0
     readonly [index: number]: T
     private readonly _emitter: EventEmitter
@@ -613,6 +692,10 @@ export class List<T extends object> implements Iterable<T> {
             watcher.delete()
         }
         return true
+    }
+
+    getWatcher(data: T) {
+        return this._watchers.get(data)
     }
 
     getMetadata(): ListMetadata<T> {
