@@ -85,30 +85,40 @@ export class Watcher<T extends object = any> {
                         throw new Error(`Do not allow modification watched list property ${property}`)
                     }
                 }
-                if (value !== oldValue) {
-                    this._emitter.emit('change', target, property, oldValue, value)
+                if (value !== oldValue && value === undefined || value === null
+                    || value instanceof Date
+                    || value instanceof Buffer
+                    || typeof value === 'number'
+                    || typeof value === 'string'
+                    || typeof value === 'bigint'
+                    || typeof value === 'boolean'
+                    || typeof value === 'symbol') {
+    
+                    if (value !== oldValue) {
+                        this._emitter.emit('change', target, property, oldValue, value)
 
-                    if (this.status === DataStatus.Original || this.status === DataStatus.Modified) {
-                        const hasOrigin = Reflect.has(this._changedValues, property)
-                        if (!hasOrigin) {
-                            this._changedValues[property] = oldValue
-                            this._changedCount++
-                            if (this.status === DataStatus.Original) {
-                                this.status = DataStatus.Modified
-                                this._emitter.emit('modify', this.source)
+                        if (this.status === DataStatus.Original || this.status === DataStatus.Modified) {
+                            const hasOrigin = Reflect.has(this._changedValues, property)
+                            if (!hasOrigin) {
+                                this._changedValues[property] = oldValue
+                                this._changedCount++
+                                if (this.status === DataStatus.Original) {
+                                    this.status = DataStatus.Modified
+                                    this._emitter.emit('modify', this.source)
+                                }
                             }
-                        }
-                        if (hasOrigin && this._changedValues[property] === value) {
-                            Reflect.deleteProperty(this._changedValues, property)
-                            this._changedCount--
-                            if (this._changedCount === 0) {
-                                this.status = DataStatus.Original
-                                this._emitter.emit('reset', this.source)
+                            if (hasOrigin && this._changedValues[property] === value) {
+                                Reflect.deleteProperty(this._changedValues, property)
+                                this._changedCount--
+                                if (this._changedCount === 0) {
+                                    this.status = DataStatus.Original
+                                    this._emitter.emit('reset', this.source)
+                                }
                             }
                         }
                     }
+                    return Reflect.set(target, property, value)
                 }
-                return Reflect.set(target, property, value)
             },
 
             get: (target: T, property: string | number): any => {
