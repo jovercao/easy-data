@@ -1,6 +1,4 @@
-import _ = require('lodash')
 import { EventEmitter } from 'events'
-import { EMFILE } from 'constants'
 
 /**
  * 当前数据状态
