@@ -646,13 +646,23 @@ export class List<T extends object> implements Iterable<T> {
     }
 }
 
-export function watch<T extends object>(items: T[]): List<T>
-export function watch<T extends object>(item: T): Watcher<T>
-export function watch<T extends object>(args: T[] | T) {
+/**
+ * 监听数据列表
+ * @param items 数据项
+ * @param deepth 是否递归watch
+ */
+export function watch<T extends object>(items: T[], deepth?: boolean): List<T>
+/**
+ * 监听数据项
+ * @param item 数据项
+ * @param deepth 是否递归监听
+ */
+export function watch<T extends object>(item: T, deepth?: boolean): Watcher<T>
+export function watch<T extends object>(args: T[] | T, deepth = false) {
     if (args instanceof Array) {
         return new List(args)
     }
-    return Watcher.new(args)
+    return Watcher.origin(args)
 }
 
 export default watch
