@@ -39,6 +39,6 @@ export function isProxyData(value: any): value is ProxyData<any> {
     return !!Reflect.get(value, SYMBOLE_WATCHER)
 }
 
-export function isObjectOrObjectArray(value: any): value is object | object[] {
-    return (Array.isArray(value) && typeof [value]) typeof value === 'object'
-}
+// export function isObjectOrObjectArray(value: any): value is object | object[] {
+//     return (Array.isArray(value) && typeof [value]) typeof value === 'object'
+// }

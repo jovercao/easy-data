@@ -346,7 +346,7 @@ describe('测试', () => {
             ]
         }
 
-        const watcher = Watcher.new(sourceData, true)
+        const watcher = Watcher.new(sourceData)
         /// @ts-ignore
         assert(watcher.status === DataStatus.New)
 
@@ -386,7 +386,7 @@ describe('测试', () => {
         assert(modifies === 1)
         /// @ts-ignore
         assert(watcher.status === DataStatus.Modified) // 'modified'
-        const changeds = watcher.getChanges()
+        let changeds = watcher.getChanges()
         /// @ts-ignore
         assert.deepStrictEqual(changeds, {
             name: { oldValue: '张三', newValue: '李四' },
@@ -425,7 +425,7 @@ describe('测试', () => {
                     }
                 ]
             }
-        })
+        }, '初始数据不正确')
         // 修改回原有值导致reset触发
         watcher.data.name = '张三'
         watcher.data.sex = '男'
@@ -451,17 +451,129 @@ describe('测试', () => {
         /// @ts-ignore
         assert(watcher.status === DataStatus.Deleted)
 
+        changeds = watcher.getChanges()
+        /// @ts-ignore
+        assert.deepStrictEqual(changeds, {
+            friends: {
+                addeds: [],
+                modifieds: [],
+                originals: [],
+                deleteds: [
+                    {
+                        item: {
+                            name: '王五',
+                            birthday: new Date(2012, 5, 1),
+                            age: 7,
+                            sex: '男'
+                        },
+                        changes: {}
+                    },
+                    {
+                        item: {
+                            name: '张三',
+                            birthday: new Date(2012, 5, 2),
+                            age: 7,
+                            sex: '男'
+                        },
+                        changes: {}
+                    },
+                    {
+                        item: {
+                            name: '李四',
+                            birthday: new Date(2012, 5, 3),
+                            age: 7,
+                            sex: '男'
+                        },
+                        changes: {}
+                    }
+                ]
+            }
+        }, '已删除未提交的数据不正确')
+
         watcher.reset()
         /// @ts-ignore
         assert(watcher.status === DataStatus.Original)
+        changeds = watcher.getChanges()
+        assert.deepStrictEqual(changeds, {
+            friends: {
+                addeds: [],
+                modifieds: [],
+                originals: [
+                    {
+                        item: {
+                            name: '王五',
+                            birthday: new Date(2012, 5, 1),
+                            age: 7,
+                            sex: '男'
+                        },
+                        changes: {}
+                    },
+                    {
+                        item: {
+                            name: '张三',
+                            birthday: new Date(2012, 5, 2),
+                            age: 7,
+                            sex: '男'
+                        },
+                        changes: {}
+                    },
+                    {
+                        item: {
+                            name: '李四',
+                            birthday: new Date(2012, 5, 3),
+                            age: 7,
+                            sex: '男'
+                        },
+                        changes: {}
+                    }
+                ],
+                deleteds: []
+            }
+        }, '还原后的数据不正确')
 
-        /// @ts-ignore
-        assert.deepStrictEqual(watcher.data, {
-            name: '张三',
-            sex: '男',
-            age: 8,
-            birthday: new Date(2011, 10, 31)
-        })
+        watcher.data.friends.delete(0)
+        assert(watcher.status === DataStatus.Modified, '删除明细后的状态不正确')
+
+        changeds = watcher.getChanges()
+        assert.deepStrictEqual(changeds, {
+            friends: {
+                addeds: [],
+                modifieds: [],
+                originals: [
+                    {
+                        item: {
+                            name: '张三',
+                            birthday: new Date(2012, 5, 2),
+                            age: 7,
+                            sex: '男'
+                        },
+                        changes: {}
+                    },
+                    {
+                        item: {
+                            name: '李四',
+                            birthday: new Date(2012, 5, 3),
+                            age: 7,
+                            sex: '男'
+                        },
+                        changes: {}
+                    }
+                ],
+                deleteds: [
+                    {
+                        item: {
+                            name: '王五',
+                            birthday: new Date(2012, 5, 1),
+                            age: 7,
+                            sex: '男'
+                        },
+                        changes: {}
+                    }
+                ]
+            }
+        }, '删除明细后的数据不正确')
+
+
 
         watcher.delete()
         //@ts-ignore
@@ -470,6 +582,7 @@ describe('测试', () => {
 
         /// @ts-ignore
         assert(watcher.status === DataStatus.Invalid)
+        assert.strictEqual(watcher.data.friends.count, 0, '删除后的明细数目不正确')
     })
 
 })
