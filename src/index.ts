@@ -1,6 +1,7 @@
+import { profileEnd } from 'console'
 import { EventEmitter } from 'events'
 import { rootCertificates } from 'tls'
-import { BaseType, Binary, isBaseType, isBinary, isProxyData } from './util'
+import { BaseType, Binary, isBaseType, isBinary, isProxyData, isUnspportedType } from './util'
 
 /**
  * 当前数据状态
@@ -30,34 +31,88 @@ export enum DataStatus {
 
 export type Element<T extends Array<object>> = T extends Array<infer E> ? E : never
 
+export const SYMBOLE_WATCHER = Symbol('#WATCHER')
+// type SYMBOLE_WATCHER = typeof SYMBOLE_WATCHER
+
+
+type SubListPropertiesOf<T> = {
+    [P in keyof T]:
+        NonNullable<T[P]> extends BaseType | Map<any, any> | Set<any> ? never :
+        NonNullable<T[P]> extends object[] ? P : never
+}[keyof T]
+
+type SubItemPropertiesOf<T> = {
+    [P in keyof T]:
+        NonNullable<T[P]> extends BaseType | Map<any, any> | Set<any> ? never :
+        NonNullable<T[P]> extends object[] ? never : P
+}[keyof T]
+
+/**
+ * 获取明细属性列表
+ */
+type WatchPropertiesOf<T> = SubListPropertiesOf<T> | SubItemPropertiesOf<T>
+
+type WatchProperty = {
+    hasMany: boolean,
+    list: List<any>
+}
+
+/**
+ * 基础属性
+ */
+type BasePropertiesOf<T> = Exclude<keyof T, WatchPropertiesOf<T>>
+
+export type ProxyData<T extends object> = {
+    /**
+     * 基础属性，包括Map/Set等不支持watch的属性
+     */
+    [P in BasePropertiesOf<T>]: T[P]
+} & {
+    /**
+     * 子列表属性
+     */
+    readonly [P in SubListPropertiesOf<T>]: NonNullable<T[P]> extends Array<infer E> ? (E extends object ? List<E> : never) : never
+} & {
+    /**
+     * 子对象属性
+     */
+    [P in SubItemPropertiesOf<T>]: NonNullable<T[P]> extends object ? ProxyData<NonNullable<T[P]>> | T[P] : never
+} & {
+    [SYMBOLE_WATCHER]: Watcher<T>;
+}
+
+
 type ChangedProperty<T> = {
     oldValue: T
     newValue: T
 }
 
 export type ChangeData<T extends object> = {
-    [P in keyof T]?: T[P] extends Set<any> | Map<any, any> ? never :
-        T[P] extends Array<infer E> ? (E extends object ? ListMetadata<E> : ChangedProperty<T[P]>) :
-        T[P] extends object ? ListMetadata<T[P]> :
-        T[P] extends BaseType ? ChangedProperty<T[P]> : never
-}
-
-export const SYMBOLE_WATCHER = Symbol('#WATCHER')
-// type SYMBOLE_WATCHER = typeof SYMBOLE_WATCHER
-
-export type ProxyData<T extends object> = {
-    [P in keyof T]: 
-        T[P] extends Array<infer E> ? (E extends object ? List<E> : ChangedProperty<T[P]>) :
-        T[P] extends Set<any> | Map<any, any> ? T[P] :
-        T[P] extends object ? List<T[P]> : T[P]
+    /**
+     * 基础属性，包括Map/Set等不支持watch的属性
+     */
+    readonly [P in BasePropertiesOf<T>]?: T[P]
 } & {
-    [SYMBOLE_WATCHER]: Watcher<T>;
+    /**
+     * 子列表属性
+     */
+    readonly [P in SubListPropertiesOf<T>]?: NonNullable<T[P]> extends Array<infer E> ? (E extends object ? ListMetadata<E> : never) : never
+} & {
+    /**
+     * 子对象属性
+     */
+    readonly [P in SubItemPropertiesOf<T>]?: NonNullable<T[P]> extends object ? ChangeData<NonNullable<T[P]>> | T[P] : never
 }
 
-type WatchProperty = {
-    hasMany: boolean,
-    list: List<any>
-}
+export type WatcherChangeEventHandler<T> = <P extends keyof T>(target: T, property: P, oldValue: T[P], newValue: T[P]) => void
+export type WatcherSubChangeEventHandler<T> = <P extends keyof T>(target: T, property: P, subEvent: {
+    event: 'add' | 'delete' | 'change' | 'reset' | 'apply' | 'clean',
+    target?: T[P],
+    index?: number
+}) => void
+
+export type ItemEventHandler<T> = (target: T) => void;
+export type EmptyEventHandler<T> = () => void;
 
 export class Watcher<T extends object = any> {
     /**
@@ -95,7 +150,44 @@ export class Watcher<T extends object = any> {
         [property: number]: WatchProperty
     }
 
-    private _initDetailWatcher(property: string | number, value: T | T[], status: DataStatus.New | DataStatus.Original): WatchProperty {
+    /**
+     * 值变更事件
+     */
+    private _onChange(property: string | number, oldValue?: any, newValue?: any) {
+        
+        this._emitter.emit('change', this.source, property, oldValue, newValue)
+
+        // if (watchProperty.hasMany) {
+        //     this._emitter.emit('change', this.source, property, watchProperty.list.source, watchProperty.list.source)
+        // } else {
+        //     this._emitter.emit('change', this.source, property, watchProperty.list.getDeleteds()[0], watchProperty.list.source[0])
+        // }
+
+        if (!(this.status === DataStatus.Original || this.status === DataStatus.Modified)) {
+            return
+        }
+        const watchProperty = this._detailWatchers[property]
+
+        const hasOrigin = Reflect.has(this._changedValues, property)
+        if (!hasOrigin) {
+            this._changedValues[property] = watchProperty ? true : oldValue
+            this._changedCount++
+            if (this.status === DataStatus.Original) {
+                this.status = DataStatus.Modified
+                this._emitter.emit('modify', this.source)
+            }
+        }
+        else if (watchProperty ? watchProperty.list.isChanged : this._changedValues[property] === newValue) {
+            Reflect.deleteProperty(this._changedValues, property)
+            this._changedCount--
+            if (this._changedCount === 0) {
+                this.status = DataStatus.Original
+                this._emitter.emit('reset', this.source)
+            }
+        }
+    }
+
+    private _createItemWatcher(property: string | number, value: T | T[], status: DataStatus.New | DataStatus.Original): WatchProperty {
         let watcherInfo: {
             hasMany: boolean
             list: List<any>
@@ -112,10 +204,8 @@ export class Watcher<T extends object = any> {
             }
         }
         const handler = (event: string, target?: T, index?: number) => {
-            this._emitter.emit('detailchange', {
-                property: property,
-                detailList: watcherInfo.list,
-                event: 'add',
+            this._emitter.emit('subchange', this.source, property, {
+                event,
                 target,
                 index
             })
@@ -125,7 +215,7 @@ export class Watcher<T extends object = any> {
         }).on('change', (target, index) => {
             handler('change', target, index)
         }).on('delete', (target, index) => {
-            handler('add', target, index)
+            handler('delete', target, index)
         }).on('clean', () => {
             handler('clean')
         }).on('reset', () => {
@@ -137,7 +227,7 @@ export class Watcher<T extends object = any> {
         return watcherInfo
     }
 
-    private constructor(data: T, status: DataStatus.New | DataStatus.Original = DataStatus.Original, deepth: boolean = true) {        
+    private constructor(data: T, status: DataStatus.New | DataStatus.Original = DataStatus.Original, deepth: boolean = true) {
         if (isBaseType(data)) {
             throw new Error('Invalid operation, data is not allowed to be the base type.')
         }
@@ -151,12 +241,12 @@ export class Watcher<T extends object = any> {
         this.status = status
         this._detailWatchers = {}
         this.deepth = deepth
-        
+
         if (this.deepth) {
             // 初始化子属性监听
             Object.entries(this.source).forEach(([key, value]) => {
                 if (!isBaseType(value)) {
-                    this._initDetailWatcher(key, value, status)
+                    this._createItemWatcher(key, value, status)
                 }
             })
         }
@@ -174,9 +264,9 @@ export class Watcher<T extends object = any> {
                 }
 
                 /**
-                 * 如果存在属性，并且是引用属性
+                 * 如果存在属性，并且是引用属性，并且不是不支持的类型
                  */
-                if (deepth && !isBaseTypeValue) {
+                if (deepth && !isBaseTypeValue && !isUnspportedType(value)) {
                     if (existsProperty) {
                         let watcherInfo = this._detailWatchers[property]
                         if (!watcherInfo) {
@@ -191,35 +281,15 @@ export class Watcher<T extends object = any> {
                             throw new Error(`Do not allow modification watched list property ${property}`)
                         }
                     }
-                    // 原先不存在的，只能是新增
-                    this._initDetailWatcher(property, value, DataStatus.New)
+                    // 原先不存在的，初始化监听
+                    this._createItemWatcher(property, value, DataStatus.New)
                 }
 
-                if (value !== oldValue) {
-                    this._emitter.emit('change', target, property, oldValue, value)
-
-                    if (this.status === DataStatus.Original || this.status === DataStatus.Modified) {
-                        const hasOrigin = Reflect.has(this._changedValues, property)
-                        if (!hasOrigin) {
-                            this._changedValues[property] = oldValue
-                            this._changedCount++
-                            if (this.status === DataStatus.Original) {
-                                this.status = DataStatus.Modified
-                                this._emitter.emit('modify', target)
-                            }
-                        }
-                        if (hasOrigin && this._changedValues[property] === value) {
-                            Reflect.deleteProperty(this._changedValues, property)
-                            this._changedCount--
-                            if (this._changedCount === 0) {
-                                this.status = DataStatus.Original
-                                this._emitter.emit('reset', target)
-                            }
-                        }
-                    }
-                    return Reflect.set(target, property, value)
+                if (oldValue !== value) {
+                    this._onChange(property, oldValue, value)
                 }
-                return true
+                // 值不变或者不支持的类型
+                return Reflect.set(target, property, value)
             },
 
             get: (target: T, property: string | number | symbol): any => {
@@ -227,24 +297,22 @@ export class Watcher<T extends object = any> {
                     return this
                 }
                 const value = Reflect.get(target, property)
-                if (typeof property === 'symbol') {
-                    return value
+                // // 不支持的类型，直接默认操作
+                // if (!deepth || typeof property === 'symbol' || isBaseType(value) || isUnspportedType(value)) {
+                //     return value
+                // }
+                if (this.deepth && typeof property !== 'symbol' && !isBaseType(value) && !isUnspportedType(value)) {
+                    let watcherInfo = this._detailWatchers[property]
+                    if (!watcherInfo) {
+                        throw new Error('Source is changed by outside Watcher! You have to make sure that all changes are made in the Watcher.')
+                    }
+                    if (watcherInfo.hasMany) {
+                        return watcherInfo.list
+                    } else {
+                        return watcherInfo.list[0]
+                    }
                 }
-                if (isBaseType(value)) {
-                    return value
-                }
-                if (!deepth) {
-                    return value
-                }
-                let watcherInfo = this._detailWatchers[property]
-                if (!watcherInfo) {
-                    throw new Error('Source is changed by outside Watcher! You have to make sure that all changes are made in the Watcher.')
-                }
-                if (watcherInfo.hasMany) {
-                    return watcherInfo.list
-                } else {
-                    return watcherInfo.list[0]
-                }
+                return value
             }
         }) as ProxyData<T>
     }
@@ -280,28 +348,30 @@ export class Watcher<T extends object = any> {
      * @param event 
      * @param handler 
      */
-    on(event: 'change', handler: (target: T, property: keyof T, oldValue: any, newValue: any) => void): this
+    on(event: 'change', handler: WatcherChangeEventHandler<T>): this
     /**
      * 当该记录被记录集删除时触发
      * @param event 
      * @param handler 
      */
     on(event: 'delete', handler: (target: T) => void): this
+    /**
+     * 当明细子属性发生变化时触发
+     * @param event 
+     * @param handler
+     */
+    on(event: 'subchange', handler: WatcherSubChangeEventHandler<T>): this
     on(event: string, handler: (...args: any[]) => void): this {
         this._emitter.on(event, handler)
         return this
     }
 
-    off(event: 'apply', handler: (target: T) => void): this
-    off(event: 'reset', handler: (target: T) => void): this
-    off(event: 'modify', handler: (target: T) => void): this
-    off(event: 'delete', handler: (target: T) => void): this
-    off(event: 'change', handler: (target: T, property: keyof T, oldValue: any, newValue: any) => void): this
-    off(event: 'apply'): this
-    off(event: 'reset'): this
-    off(event: 'modify'): this
-    off(event: 'delete'): this
-    off(event: 'change'): this
+    off(event: 'apply', handler?: (target: T) => void): this
+    off(event: 'reset', handler?: (target: T) => void): this
+    off(event: 'modify', handler?: (target: T) => void): this
+    off(event: 'delete', handler?: (target: T) => void): this
+    off(event: 'change', handler?: WatcherChangeEventHandler<T>): this
+    off(event: 'subchange', handler?: WatcherSubChangeEventHandler<T>): this
     off(event: string, handler?: (...args: any[]) => void): this {
         if (!handler) {
             this._emitter.removeAllListeners()
@@ -375,13 +445,13 @@ export class Watcher<T extends object = any> {
      */
     delete() {
         // 删除所有明细
+        this._checkInvalid()
+        this._resetValue()
         if (this.deepth) {
             for (const watcher of Object.values(this._detailWatchers)) {
                 watcher.list.clean()
             }
         }
-        this._checkInvalid()
-        this._resetValue()
         this.status = DataStatus.Deleted
         this._emitter.emit('delete', this.source)
     }
@@ -391,7 +461,7 @@ export class Watcher<T extends object = any> {
      */
     getChanges(): ChangeData<T> {
         this._checkInvalid()
-        const changeds: ChangeData<T> = {} 
+        const changeds: ChangeData<T> = {}
         if (this.status === DataStatus.New) {
             Object.entries(this.source).forEach(([key, value]) => {
                 Reflect.set(changeds, key, {
@@ -420,9 +490,13 @@ export class Watcher<T extends object = any> {
  * 变更项
  */
 export type ChangedItem<T extends object> = {
-    // 当前项内容
+    /**
+     * 当前项内容
+     */
     item: T;
-    // 修改项
+    /**
+     * 修改项，明细表的更改也在此属性中
+     */
     changes: ChangeData<T>;
 }
 
@@ -445,14 +519,16 @@ export interface ListMetadata<T extends object> {
     originals: ChangedItem<T>[];
 }
 
-
+/**
+ * Watcher列表
+ */
 export class List<T extends object = any> implements Iterable<T> {
-    private _count: number = 0
+    readonly count: number = 0
     readonly [index: number]: T
     private readonly _emitter: EventEmitter
 
     *[Symbol.iterator](): Iterator<T> {
-        for (let i = 0; i < this._count; i++) {
+        for (let i = 0; i < this.count; i++) {
             yield this[i]
         }
     }
@@ -460,14 +536,35 @@ export class List<T extends object = any> implements Iterable<T> {
     private readonly _watchers: Map<T, Watcher<T>>
 
     private readonly _allItems: Map<T, number>
-    private _viewItems: T[]
-    private _originsItems: T[]
+    /**
+     * 数据源对象
+     */
+    source: T[]
+    /**
+     * 数组原始顺序，用于reset
+     */
+    private _origins: T[]
 
+    /**
+     * 是否在应用变更当中
+     */
     private _applying: boolean = false
+    /**
+     * 是否在重置当中
+     */
     private _resetting: boolean = false
+    /**
+     * 是否在清空执行当中
+     */
     private _cleaning: boolean = false
 
+    /**
+     * 已添加的项
+     */
     private _addedCount: number = 0
+    /**
+     * 已删除的项
+     */
     private _deletedCount: number = 0
     private _modifiedCount: number = 0
 
@@ -485,10 +582,6 @@ export class List<T extends object = any> implements Iterable<T> {
         return this._modifiedCount
     }
 
-    get count() {
-        return this._count
-    }
-
     get isChanged() {
         return this._addedCount > 0 || this._deletedCount > 0 || this._modifiedCount > 0
     }
@@ -498,16 +591,16 @@ export class List<T extends object = any> implements Iterable<T> {
         /**
          * 视图查看时的项
          */
-        this._viewItems = Array.from(datas)
+        this.source = datas
         this._watchers = new Map<T, Watcher<T>>()
         this._allItems = new Map<T, number>()
 
         this.deepth = deepth
         // 原始顺序，用于reset重置
-        this._originsItems = Array.from(datas)
-        this._viewItems.forEach((item, index) => this._allItems.set(item, index))
-        for (let i = 0; i < this._viewItems.length; i++) {
-            this._bind(this._viewItems[i], status)
+        this._origins = Array.from(datas)
+        this.source.forEach((item, index) => this._allItems.set(item, index))
+        for (let i = 0; i < this.source.length; i++) {
+            this._bind(this.source[i], status)
             this._attach(i)
         }
     }
@@ -520,24 +613,27 @@ export class List<T extends object = any> implements Iterable<T> {
         return new List(datas, DataStatus.New, deepth)
     }
 
+    /**
+     * 维护List索引
+     */
     private _updateIndexes() {
-        if (this._count > this._viewItems.length) {
-            for (let i = this._count - 1; i >= this._viewItems.length - 1; i--) {
+        if (this.count > this.source.length) {
+            for (let i = this.count - 1; i >= this.source.length - 1; i--) {
                 this._disattach(i)
             }
-        } else if (this._count < this._viewItems.length) {
-            for (let i = this._count; i < this._viewItems.length; i++) {
+        } else if (this.count < this.source.length) {
+            for (let i = this.count; i < this.source.length; i++) {
                 this._attach(i)
             }
         }
-        this._count = this._viewItems.length
+        Reflect.set(this, 'count', this.source.length)
     }
 
     /**
      * 对视图进行排序
      */
     sort(compare?: <T>(a: T, b: T) => number) {
-        this._viewItems.sort(compare)
+        this.source.sort(compare)
     }
 
     /**
@@ -546,7 +642,7 @@ export class List<T extends object = any> implements Iterable<T> {
     private _attach(index: number) {
         Reflect.defineProperty(this, index, {
             get: () => {
-                const item = this._viewItems[index]
+                const item = this.source[index]
                 const watcher = this._watchers.get(item)
                 if (!watcher) {
                     throw new Error('Internal Error')
@@ -563,6 +659,9 @@ export class List<T extends object = any> implements Iterable<T> {
         Reflect.deleteProperty(this, index)
     }
 
+    /**
+     * 将源数据项绑定到List中，
+     */
     private _bind(item: T, status: DataStatus.New | DataStatus.Original) {
         let watcher: Watcher<T>
         if (status === DataStatus.New) {
@@ -573,7 +672,7 @@ export class List<T extends object = any> implements Iterable<T> {
         this._watchers.set(item, watcher)
         // this._watchers.set(watcher.data, watcher)
         watcher.on('change', (item) => {
-            this._emitter.emit('change', item, this._viewItems.indexOf(item))
+            this._emitter.emit('change', item, this.source.indexOf(item))
         })
         watcher.on('modify', (item) => {
             this._modifiedCount++
@@ -598,15 +697,15 @@ export class List<T extends object = any> implements Iterable<T> {
             if (this._resetting) return
             switch (oldStatus) {
                 case DataStatus.Deleted:
-                    const resetIndex = Math.min(<number>this._allItems.get(item), this._count)
-                    this._viewItems.splice(resetIndex, 0, item)
+                    const resetIndex = Math.min(<number>this._allItems.get(item), this.count)
+                    this.source.splice(resetIndex, 0, item)
                     this._allItems.set(item, resetIndex)
                     this._emitter.emit('add', item, resetIndex)
                     this._updateIndexes()
                     this._deletedCount--;
                     break;
                 case DataStatus.Modified:
-                    this._emitter.emit('change', item, this._viewItems.indexOf(item))
+                    this._emitter.emit('change', item, this.source.indexOf(item))
                     this._modifiedCount--;
                     break;
                 case DataStatus.New:
@@ -619,15 +718,17 @@ export class List<T extends object = any> implements Iterable<T> {
 
         watcher.on('delete', (item) => {
             if (this._cleaning) return
-            const index = this._viewItems.indexOf(item)
-            this._viewItems.splice(index, 1)
+            const index = this.source.indexOf(item)
+            this.source.splice(index, 1)
             this._deletedCount++
             this._updateIndexes()
             this._emitter.emit('delete', item, index)
         })
     }
 
-    // 清理多余的项
+    /**
+     * 将项解除绑定
+     */
     private _unbind(item: T) {
         const watcher = <Watcher<T>>this._watchers.get(item)
         watcher.off('change')
@@ -667,13 +768,16 @@ export class List<T extends object = any> implements Iterable<T> {
         return this
     }
 
+    /**
+     * 清空所有项
+     */
     clean() {
         this._cleaning = true
         try {
-            for (const item of this._viewItems) {
+            for (const item of this.source) {
                 this.delete(item)
             }
-            this._viewItems = []
+            this.source.length = 0
             this._updateIndexes()
             this._emitter.emit('clean')
         }
@@ -685,50 +789,56 @@ export class List<T extends object = any> implements Iterable<T> {
     /**
      * 重置所有项
      */
-    apply(): void
+    apply(): this
     /**
      * 重置指定索引的项
      * @param index 
      */
-    apply(index: number): void
+    apply(index: number): this
     /**
-     * 重置指定的项
+     * 应用指定的项
      * @param item 
      */
     apply(item: T): this
-    apply(args?: number | T): this {
-        let item: T | undefined
-        if (typeof args === 'number') {
-            item = this._viewItems[args]
-        } else {
-            item = args
+    /**
+     * 应用指定的项
+     * @param item 
+     */
+    apply(item: ProxyData<T>): this
+    apply(args?: number | T | ProxyData<T>): this {
+        if (args) {
+            let item: T
+            if (typeof args === 'number') {
+                item = this.source[args]
+            } else if (isProxyData(args)) {
+                item = args[SYMBOLE_WATCHER].source
+            } else {
+                item = args
+            }
+
+            const watcher = this._watchers.get(item)
+            if (!watcher) {
+                throw new Error('Out of range, item is not in the List.')
+            }
+            watcher.apply()
+            return this
         }
 
-        if (item) {
-            if (!this._allItems.get(item)) {
-                throw new Error('Item that do not exist of the list')
-            }
-            const watcher = this._watchers.get(item)
-            if (watcher) {
+        this._applying = true
+        try {
+            for (const [item, watcher] of this._watchers.entries()) {
                 watcher.apply()
-            }
-        } else {
-            this._applying = true
-            try {
-                for (const [item, watcher] of this._watchers.entries()) {
-                    watcher.apply()
-                    if (watcher.status === DataStatus.Invalid) {
-                        this._unbind(item)
-                    }
+                if (watcher.status === DataStatus.Invalid) {
+                    this._unbind(item)
                 }
-                this._originsItems = Array.from(this._viewItems)
-                this._addedCount = 0
-                this._deletedCount = 0
-                this._modifiedCount = 0
-                this._updateIndexes()
-            } finally {
-                this._applying = false
             }
+            this._origins = Array.from(this.source)
+            this._addedCount = 0
+            this._deletedCount = 0
+            this._modifiedCount = 0
+            this._updateIndexes()
+        } finally {
+            this._applying = false
         }
         return this
     }
@@ -747,38 +857,41 @@ export class List<T extends object = any> implements Iterable<T> {
      * @param item 
      */
     reset(item: T): this
-    reset(arg?: number | T): this {
-        let item: T | undefined = undefined
-        if (typeof arg === 'number') {
-            item = this._viewItems[arg]
-        }
-        if (typeof arg === 'object') {
-            item = arg
-        }
-
-        if (item) {
-            if (!this._allItems.get(item)) {
-                throw new Error('Item that do not exist of the list')
+    reset(item: ProxyData<T>): this
+    reset(arg?: number | T | ProxyData<T>): this {
+        if (arg) {
+            let item: T | undefined = undefined
+            if (typeof arg === 'number') {
+                item = this.source[arg]
+            } else if (isProxyData(arg)) {
+                item = arg[SYMBOLE_WATCHER].source
+            } else {
+                item = arg
             }
             const watcher = this._watchers.get(item)
-            if (watcher) watcher.reset()
-        } else {
-            this._resetting = true
-            try {
-                for (const [item, watcher] of this._watchers.entries()) {
-                    watcher.reset()
-                    if (watcher.status === DataStatus.Invalid) {
-                        this._unbind(item)
-                    }
-                }
-                this._addedCount = 0
-                this._deletedCount = 0
-                this._modifiedCount = 0
-                this._viewItems = Array.from(this._originsItems)
-                this._updateIndexes()
-            } finally {
-                this._resetting = false
+            if (!watcher) {
+                throw new Error('Out of range, item is not in then List.')
             }
+            watcher.reset()
+            return this
+        }
+
+        this._resetting = true
+        try {
+            for (const [item, watcher] of this._watchers.entries()) {
+                watcher.reset()
+                if (watcher.status === DataStatus.Invalid) {
+                    this._unbind(item)
+                }
+            }
+            this._addedCount = 0
+            this._deletedCount = 0
+            this._modifiedCount = 0
+            this.source.length = this._origins.length
+            this._origins.forEach((item, index) => this.source[index] = item)
+            this._updateIndexes()
+        } finally {
+            this._resetting = false
         }
         return this
     }
@@ -793,13 +906,13 @@ export class List<T extends object = any> implements Iterable<T> {
             throw new Error('Invalid action, item is watching in list.')
         }
         if (index === undefined) {
-            index = this._count
+            index = this.count
         } else {
-            if (index < 0 || index > this._count) {
+            if (index < 0 || index > this.count) {
                 throw new Error('Out of range: index')
             }
         }
-        this._viewItems.splice(index, 0, item)
+        this.source.splice(index, 0, item)
         this._allItems.set(item, index)
         this._bind(item, DataStatus.New)
         this._addedCount++
@@ -814,7 +927,7 @@ export class List<T extends object = any> implements Iterable<T> {
     delete(args: T | ProxyData<T> | number): boolean {
         let item: T
         if (typeof args === 'number') {
-            item = this._viewItems[args]
+            item = this.source[args]
         } else if (isProxyData(args)) {
             item = args[SYMBOLE_WATCHER].source
         } else {
@@ -828,8 +941,8 @@ export class List<T extends object = any> implements Iterable<T> {
 
         if (!watcher) {
             if (!this._cleaning) {
-                const index = this._viewItems.indexOf(item)
-                this._viewItems.splice(index, 1)
+                const index = this.source.indexOf(item)
+                this.source.splice(index, 1)
                 this._deletedCount++
                 this._updateIndexes()
                 this._emitter.emit('delete', item, index)
@@ -853,6 +966,38 @@ export class List<T extends object = any> implements Iterable<T> {
         return watcher
     }
 
+    getDeleteds(): T[] {
+        const list = Array.from(this._allItems.keys())
+        return list.filter(item => {
+            const watcher = this._watchers.get(item)
+            return watcher!.status === DataStatus.Deleted
+        })
+    }
+
+    getModifieds(): T[] {
+        const list = Array.from(this._allItems.keys())
+        return list.filter(item => {
+            const watcher = this._watchers.get(item)
+            return watcher!.status === DataStatus.Modified
+        })
+    }
+
+    getAddeds(): T[] {
+        const list = Array.from(this._allItems.keys())
+        return list.filter(item => {
+            const watcher = this._watchers.get(item)
+            return watcher!.status === DataStatus.New
+        })
+    }
+
+    getOriginals(): T[] {
+        const list = Array.from(this._allItems.keys())
+        return list.filter(item => {
+            const watcher = this._watchers.get(item)
+            return watcher!.status === DataStatus.Original
+        })
+    }
+
     getMetadata(): ListMetadata<T> {
         const list = Array.from(this._allItems.keys())
         return {
@@ -863,7 +1008,7 @@ export class List<T extends object = any> implements Iterable<T> {
                 const watcher = this._watchers.get(item)
                 return {
                     item,
-                    changes: (watcher as Watcher<T>).getChanges()
+                    changes: watcher!.getChanges()
                 }
             }),
             modifieds: list.filter(item => {
@@ -873,7 +1018,7 @@ export class List<T extends object = any> implements Iterable<T> {
                 const watcher = this._watchers.get(item)
                 return {
                     item,
-                    changes: (watcher as Watcher<T>).getChanges()
+                    changes: watcher!.getChanges()
                 }
             }),
             deleteds: list.filter(item => {
@@ -883,7 +1028,7 @@ export class List<T extends object = any> implements Iterable<T> {
                 const watcher = this._watchers.get(item)
                 return {
                     item,
-                    changes: (watcher as Watcher<T>).getChanges()
+                    changes: watcher!.getChanges()
                 }
             }),
             originals: list.filter(item => {
@@ -893,7 +1038,7 @@ export class List<T extends object = any> implements Iterable<T> {
                 const watcher = this._watchers.get(item)
                 return {
                     item,
-                    changes: (watcher as Watcher<T>).getChanges()
+                    changes: watcher!.getChanges()
                 }
             })
         }

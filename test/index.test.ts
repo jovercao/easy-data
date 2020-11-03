@@ -1,13 +1,14 @@
-import { DataStatus, watch, Watcher } from '../src/index'
+import { DataStatus, List, ProxyData, watch, Watcher } from '../src/index'
 import assert = require('assert')
 
 interface Person {
-    name: string
-    age: number
-    birthday: Date
-    sex: '男' | '女'
+    name: string | undefined
+    age: number | undefined
+    birthday: Date | undefined
+    sex: '男' | '女' | undefined
     friends?: Person[]
 }
+
 
 describe('测试', () => {
     it('Watcher', () => {
@@ -38,7 +39,7 @@ describe('测试', () => {
         }).on('delete', () => {
             deletes++
         })
-        
+
         watcher.data.name = '张三'
 
         assert(changes === 1)
@@ -51,7 +52,7 @@ describe('测试', () => {
 
         assert.deepStrictEqual(sourceData, watcher.data)
         assert.deepStrictEqual(watcher.source, watcher.data)
-        
+
         watcher.data.name = '李四'
         watcher.data.sex = '女'
 
@@ -156,7 +157,7 @@ describe('测试', () => {
         })
 
         let i = 0
-        for(const item of list) {
+        for (const item of list) {
             assert.deepStrictEqual(item, datas[i])
             i++
         }
@@ -268,14 +269,14 @@ describe('测试', () => {
 
         assert(deletes === 2)
         assert(list.isChanged === true)
-        assert(list.count === datas.length - 1)
+        assert(list.count === datas.length)
         assert.deepStrictEqual(list[0], {
             name: '哈哈',
             birthday: new Date(2011, 10, 31),
             age: 8,
             sex: '女'
         })
-    
+
         list.apply()
 
         /// @ts-ignore
@@ -360,11 +361,13 @@ describe('测试', () => {
         }).on('delete', () => {
             deletes++
         })
-        
+
         watcher.data.name = '张三'
 
         /// @ts-ignore
         assert(changes === 1)
+
+        assert.deepStrictEqual(sourceData, { ...watcher.data, friends: watcher.data?.friends?.source })
 
         watcher.apply()
         /// @ts-ignore
@@ -373,9 +376,8 @@ describe('测试', () => {
         /// @ts-ignore
         assert(applys === 1)
 
-        assert.deepStrictEqual(sourceData, { ...watcher.data, friends: watcher.data.friends })
-        assert.deepStrictEqual(watcher.source, watcher.data)
-        
+        assert.deepStrictEqual(sourceData, { ...watcher.data, friends: watcher.data?.friends?.source })
+
         watcher.data.name = '李四'
         watcher.data.sex = '女'
         //@ts-ignore
@@ -390,7 +392,10 @@ describe('测试', () => {
             name: { oldValue: '张三', newValue: '李四' },
             sex: { oldValue: '男', newValue: '女' },
             friends: {
-                addeds: [
+                addeds: [],
+                modifieds: [],
+                deleteds: [],
+                originals: [
                     {
                         item: {
                             name: '王五',
@@ -398,17 +403,27 @@ describe('测试', () => {
                             age: 7,
                             sex: '男'
                         },
-                        changes: {
-                            name: { oldValue: undefined, newValue: '王五' },
-                            birthday: { oldValue: undefined, newValue: new Date(2012, 5, 1) },
-                            age: { oldValue: undefined, newValue: 7 },
-                            sex: { oldValue: undefined, newValue: '男' },
-                        }
+                        changes: {}
+                    },
+                    {
+                        item: {
+                            name: '张三',
+                            birthday: new Date(2012, 5, 2),
+                            age: 7,
+                            sex: '男'
+                        },
+                        changes: {}
+                    },
+                    {
+                        item: {
+                            name: '李四',
+                            birthday: new Date(2012, 5, 3),
+                            age: 7,
+                            sex: '男'
+                        },
+                        changes: {}
                     }
-                ],
-                modifieds: [],
-                deleteds: [],
-                originals: []
+                ]
             }
         })
         // 修改回原有值导致reset触发
