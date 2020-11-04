@@ -1,6 +1,6 @@
 {
   "name": "@jovercao/easy-data",
-  "version": "1.0.0-beta05",
+  "version": "1.0.0-beta06",
   "description": "可监查数据对象，自动追踪增删改",
   "main": "dist/index.js",
   "dependencies": {},
@@ -17,7 +17,8 @@
   },
   "scripts": {
     "test": "npx mocha --require ts-node/register ./test/index.test.ts",
-    "debug": "npx mocha --require ts-node/register ./test/index.test.ts"
+    "debug": "npx mocha --require ts-node/register ./test/index.test.ts",
+    "pub": "tsc && npm publish"
   },
   "repository": {
     "type": "git",
