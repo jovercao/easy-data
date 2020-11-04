@@ -62,6 +62,9 @@ type WatchProperty = {
  */
 type BasePropertiesOf<T> = Exclude<keyof T, WatchPropertiesOf<T>>
 
+/**
+ * 代理的数据对象，所有的数据变更应该通过该对象进行
+ */
 export type ProxyData<T extends object> = {
     /**
      * 基础属性，包括Map/Set等不支持watch的属性
@@ -69,7 +72,7 @@ export type ProxyData<T extends object> = {
     [P in BasePropertiesOf<T>]: T[P]
 } & {
     /**
-     * 子列表属性
+     * 子列表属性，List
      */
     readonly [P in SubListPropertiesOf<T>]: NonNullable<T[P]> extends Array<infer E> ? (E extends object ? List<E> : never) : never
 } & {
@@ -87,6 +90,9 @@ type ChangedProperty<T> = {
     newValue: T
 }
 
+/**
+ * 数据变更
+ */
 export type ChangeData<T extends object> = {
     /**
      * 基础属性，包括Map/Set等不支持watch的属性
@@ -101,7 +107,7 @@ export type ChangeData<T extends object> = {
     /**
      * 子对象属性
      */
-    readonly [P in SubItemPropertiesOf<T>]?: NonNullable<T[P]> extends object ? ChangeData<NonNullable<T[P]>> | T[P] : never
+    readonly [P in SubItemPropertiesOf<T>]?: NonNullable<T[P]> extends object ? ListMetadata<NonNullable<T[P]>> : never
 }
 
 /**
@@ -141,9 +147,10 @@ export class Watcher<T extends object = any> {
     }
 
     /**
-     * 代理后的对象，想要受到监控使用该对象
+     * 代理后的对象，想要监听数据变更请使用该对象
      */
     readonly data: ProxyData<T>
+
     /**
      * 源数据对象，会随着数据变化而变化
      */
