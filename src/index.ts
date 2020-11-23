@@ -252,7 +252,6 @@ export class Watcher<T extends object = any> {
         if (data instanceof Map || data instanceof Set) {
             throw new Error('Unsupport to watch Map or Set object.')
         }
-
         this._emitter = new EventEmitter()
         this._changedValues = {}
         this.source = data
@@ -577,7 +576,13 @@ export class List<T extends object = any> implements Iterable<T> {
     /**
      * 数据源对象
      */
-    source: T[]
+    readonly source: T[]
+
+    /**
+     * 监听后的数组视图
+     */
+    readonly view: ProxyData<T>[]
+
     /**
      * 数组原始顺序，用于reset
      */
@@ -629,10 +634,8 @@ export class List<T extends object = any> implements Iterable<T> {
 
     private constructor(datas: T[], status: DataStatus.New | DataStatus.Original = DataStatus.Original, deepth = true) {
         this._emitter = new EventEmitter
-        /**
-         * 视图查看时的项
-         */
         this.source = datas
+        this.view = []
         this._watchers = new Map<T, Watcher<T>>()
         this._allItems = new Map<T, number>()
 
@@ -641,7 +644,8 @@ export class List<T extends object = any> implements Iterable<T> {
         this._origins = Array.from(datas)
         this.source.forEach((item, index) => this._allItems.set(item, index))
         for (let i = 0; i < this.source.length; i++) {
-            this._bind(this.source[i], status)
+            const watcher = this._bind(this.source[i], status)
+            this.view[i] = watcher.data
             this._attach(i)
         }
     }
@@ -677,6 +681,7 @@ export class List<T extends object = any> implements Iterable<T> {
      */
     sort(compare?: <T>(a: T, b: T) => number) {
         this.source.sort(compare)
+        this.view.sort(compare)
     }
 
     /**
@@ -705,7 +710,7 @@ export class List<T extends object = any> implements Iterable<T> {
     /**
      * 将源数据项绑定到List中，
      */
-    private _bind(item: T, status: DataStatus.New | DataStatus.Original) {
+    private _bind(item: T, status: DataStatus.New | DataStatus.Original): Watcher<T> {
         let watcher: Watcher<T>
         if (status === DataStatus.New) {
             watcher = (Watcher.new as Function).call(this, item, this.deepth)
@@ -742,6 +747,7 @@ export class List<T extends object = any> implements Iterable<T> {
                 case DataStatus.Deleted:
                     const resetIndex = Math.min(<number>this._allItems.get(item), this.count)
                     this.source.splice(resetIndex, 0, item)
+                    this.view.splice(resetIndex, 0, watcher.data)
                     this._allItems.set(item, resetIndex)
                     this._emitter.emit('add', item, resetIndex)
                     this._updateIndexes()
@@ -763,10 +769,13 @@ export class List<T extends object = any> implements Iterable<T> {
             if (this._cleaning) return
             const index = this.source.indexOf(item)
             this.source.splice(index, 1)
+            this.view.splice(index, 1)
             this._deletedCount++
             this._updateIndexes()
             this._emitter.emit('delete', item, index)
         })
+
+        return watcher
     }
 
     /**
@@ -821,6 +830,7 @@ export class List<T extends object = any> implements Iterable<T> {
                 this.delete(item)
             }
             this.source.length = 0
+            this.view.length = 0
             this._updateIndexes()
             this._emitter.emit('clean')
         }
@@ -931,6 +941,7 @@ export class List<T extends object = any> implements Iterable<T> {
             this._deletedCount = 0
             this._modifiedCount = 0
             this.source.length = this._origins.length
+            this.view.length = this._origins.length
             this._origins.forEach((item, index) => this.source[index] = item)
             this._updateIndexes()
         } finally {
@@ -955,9 +966,10 @@ export class List<T extends object = any> implements Iterable<T> {
                 throw new Error('Out of range: index')
             }
         }
+        const watcher = this._bind(item, DataStatus.New)
         this.source.splice(index, 0, item)
+        this.view.splice(index, 0, watcher.data)
         this._allItems.set(item, index)
-        this._bind(item, DataStatus.New)
         this._addedCount++
         this._updateIndexes()
         this._emitter.emit('add', item, index)
@@ -986,6 +998,7 @@ export class List<T extends object = any> implements Iterable<T> {
             if (!this._cleaning) {
                 const index = this.source.indexOf(item)
                 this.source.splice(index, 1)
+                this.view.splice(index, 1)
                 this._deletedCount++
                 this._updateIndexes()
                 this._emitter.emit('delete', item, index)

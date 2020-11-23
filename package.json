@@ -1,6 +1,6 @@
 {
   "name": "@jovercao/easy-data",
-  "version": "1.0.0-beta06",
+  "version": "1.0.0-beta07",
   "description": "可监查数据对象，自动追踪增删改",
   "main": "dist/index.js",
   "dependencies": {},

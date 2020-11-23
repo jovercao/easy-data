@@ -165,6 +165,8 @@ describe('测试', () => {
         // 李四 => 哈哈
         list[1].name = '哈哈'
 
+        assert(list.view.length === list.source.length)
+
         assert(list.isChanged === true)
 
         list.add({
@@ -186,6 +188,7 @@ describe('测试', () => {
         assert(list.count === 5)
 
         list.delete(list[4])
+        assert(list.view.length === list.source.length)
 
         /// @ts-ignore
         assert(list.count === 4)
@@ -249,6 +252,8 @@ describe('测试', () => {
         })
 
         list.reset()
+
+        assert(list.view.length === list.source.length)
 
         assert.deepStrictEqual(list.getMetadata(), {
             addeds: [],
