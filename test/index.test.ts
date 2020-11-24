@@ -11,6 +11,11 @@ interface Person {
 
 
 describe('测试', () => {
+    it('test', () => {
+        const list = watch({"_":"Employee","id":3,"code":"E04","queryCode":"LS","name":"李四","sex":"Male","defaultPositionId":null,"birthday":null,"mobile":"13888888890","email":"abc1@j5.com","description":"初始化数据：undefined","createdAt":"2020-11-24T09:06:18+08:00","updatedAt":"2020-11-24T09:06:18+08:00","operatorId":null,"enabled":true,"userId":3,"belongId":1,"operator":null,"belong":{"id":1,"code":"Sc01","name":"测试有限公司"},"user":{"id":3,"name":"ls"}})
+        console.log(list.data)
+    })
+
     it('Watcher', () => {
         let resets: number = 0
         let applys: number = 0

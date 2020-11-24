@@ -34,6 +34,21 @@ export type Element<T extends Array<object>> = T extends Array<infer E> ? E : ne
 export const SYMBOLE_WATCHER = Symbol('#WATCHER')
 // type SYMBOLE_WATCHER = typeof SYMBOLE_WATCHER
 
+type WatchOptions = {
+    /**
+     * 跳过监听的属性
+     * 默认不监听 number | symbol | (^((__|$)(.*))$)
+     */
+    skipProperty: RegExp | string | ((property: string | number | symbol) => boolean)
+    /**
+     * 是否尝试监听，默认为true
+     */
+    deepth: boolean
+    /**
+     * 最大监听深度，默认为 8
+     */
+    maxDeepth: number
+}
 
 type SubListPropertiesOf<T> = {
     [P in keyof T]:
@@ -262,13 +277,16 @@ export class Watcher<T extends object = any> {
         if (this.deepth) {
             // 初始化子属性监听
             Object.entries(this.source).forEach(([key, value]) => {
-                if (!isBaseType(value)) {
+                if (!watch.options.skipProperty(key) && !isBaseType(value)) {
                     this._createItemWatcher(key, value, status)
                 }
             })
         }
         this.data = new Proxy(data, {
             set: (target: T, property: string | number, value: any): boolean => {
+                if (watch.options.skipProperty(property)) {
+                    return Reflect.set(target, property, value)
+                }
                 this._checkInvalid()
                 if (this.status === DataStatus.Deleted) {
                     throw new Error('Do not allow modification of deleted data')
@@ -312,6 +330,9 @@ export class Watcher<T extends object = any> {
             get: (target: T, property: string | number | symbol): any => {
                 if (property === SYMBOLE_WATCHER) {
                     return this
+                }
+                if (watch.options.skipProperty(property)) {
+                    return Reflect.get(target, property)
                 }
                 const value = Reflect.get(target, property)
                 // // 不支持的类型，直接默认操作
@@ -632,7 +653,7 @@ export class List<T extends object = any> implements Iterable<T> {
         return this._addedCount > 0 || this._deletedCount > 0 || this._modifiedCount > 0
     }
 
-    private constructor(datas: T[], status: DataStatus.New | DataStatus.Original = DataStatus.Original, deepth = true) {
+    private constructor(datas: T[], status: DataStatus.New | DataStatus.Original = DataStatus.Original, deepth = watch.options.deepth) {
         this._emitter = new EventEmitter
         this.source = datas
         this.view = []
@@ -651,12 +672,12 @@ export class List<T extends object = any> implements Iterable<T> {
     }
 
     static origin<T extends object>(datas: T[]): List<T>
-    static origin<T extends object>(datas: T[], deepth = true): List<T> {
+    static origin<T extends object>(datas: T[], deepth = watch.options.deepth): List<T> {
         return new List(datas, DataStatus.Original, deepth)
     }
 
     static new<T extends object>(datas: T[]): List<T>
-    static new<T extends object>(datas: T[], deepth = true): List<T> {
+    static new<T extends object>(datas: T[], deepth = watch.options.deepth): List<T> {
         return new List(datas, DataStatus.New, deepth)
     }
 
@@ -1113,11 +1134,22 @@ export function watch<T extends object>(items: T[]): List<T>
  * @param deepth 是否递归监听
  */
 export function watch<T extends object>(item: T): Watcher<T>
-export function watch<T extends object>(args: T[] | T, deepth = true): Watcher<T> | List<T> {
+export function watch<T extends object>(args: T[] | T): Watcher<T> | List<T> {
     if (args instanceof Array) {
         return List.origin(args)
     }
     return Watcher.origin(args)
+}
+
+export declare interface watch {
+    options: WatchOptions
+}
+
+watch.options = {
+    skipProperty: function isNoWatchProperty(property: string | number | symbol): boolean {
+       return typeof property === "number" || typeof property === "symbol" || property.startsWith('__') || property.startsWith('$')
+    },
+    deepth: true
 }
 
 // TODO: 兼容 deepth watch
