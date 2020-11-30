@@ -29,6 +29,7 @@ export function isBaseType(value: any): value is BaseType {
         || typeof value === 'bigint'
         || typeof value === 'boolean'
         || typeof value === 'symbol'
+        || typeof value === 'function'
 }
 
 export function isUnspportedType(value: any): boolean {
